@@ -1,0 +1,60 @@
+name: Build SE VPN APK
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Клонируем sing-box и клиент
+        run: |
+          git clone --depth 1 https://github.com/SagerNet/sing-box sing-box
+          git clone --depth 1 https://github.com/SagerNet/sing-box-for-android sing-box-for-android
+          echo "GO_VER=$(grep GO_VERSION sing-box-for-android/version.properties | cut -d= -f2 | sed 's/^go//')" >> "$GITHUB_ENV"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VER }}
+          cache: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Android NDK
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r28
+      - name: Собираем ядро (libbox)
+        working-directory: sing-box
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          make lib_install
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          go run ./cmd/internal/build_libbox -target android -platform android/arm64,android/arm
+          mkdir -p ../sing-box-for-android/app/libs
+          cp libbox*.aar ../sing-box-for-android/app/libs/
+          ls -la ../sing-box-for-android/app/libs
+      - name: Переименовываем в SE VPN
+        run: |
+          pip install pillow
+          bash patch.sh
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Собираем APK
+        working-directory: sing-box-for-android
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: ./gradlew --no-daemon :app:assembleOtherDebug
+      - name: Готовим файл
+        run: |
+          mkdir -p out
+          cp sing-box-for-android/app/build/outputs/apk/other/debug/*universal*.apk out/SE-VPN.apk 2>/dev/null || cp sing-box-for-android/app/build/outputs/apk/other/debug/*.apk out/
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SE-VPN-apk
+          path: out
